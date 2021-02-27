@@ -107,17 +107,19 @@ const char VER_MIN = " ";       // code minor version
 const byte VER_BETA = 0;        // code beta sub-version
 const byte MODULE_ID = 99;      // CBUS module type
 
-#define NUM_LEDS 2              // How many LEDs are there?
 #define NUM_SWITCHES 2          // How many switchs are there?
 
 //Module pins available for use are Pins 3 - 9 and A0 - A5
-const byte LED[NUM_LEDS] = {8, 7};            // LED pin connections through 1K8 resistor
 const byte SWITCH[NUM_SWITCHES] = {9, 6};     // Module Switch takes input to 0V.
 
 // module objects
 Bounce moduleSwitch[NUM_SWITCHES];  //  switch as input
-LEDControl moduleLED[NUM_LEDS];     //  LED as output
-
+LEDControl moduleLED[] = {
+    //  LED as output connections through 1K8 resistor
+    LEDControl(8),
+    LEDControl(7)
+};
+const int NUM_LEDS = sizeof(moduleLED) / sizeof(LEDControl);
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -199,10 +201,6 @@ void setup() {
     moduleSwitch[i].interval(5);
   }
 
-  // configure the module LEDs
-  for (int i = 0; i < NUM_LEDS; i++) {
-    moduleLED[i].setPin(LED[i]);
-  }
   ///////////////////////////////////////////////////////////////////////////
   // end of setup
 #if DEBUG
@@ -508,7 +506,7 @@ void processSerialInput(void) {
           else {
             //Request confirmed within timeout
             Serial << F(">RESETTING AND WIPING EEPROM") << endl;
-            config.resetModule();
+            //config.resetModule();
             ResetRq = false;
           }
         }

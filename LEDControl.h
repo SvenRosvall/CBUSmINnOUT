@@ -13,6 +13,7 @@ class LEDControl {
 
   public:
     LEDControl();
+    LEDControl(byte pin);
     void virtual setPin(byte pin);
     void on();
     void off();
