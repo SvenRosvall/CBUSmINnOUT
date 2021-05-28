@@ -1,19 +1,6 @@
 
-//
-///
-//
-/**************************************************************************************
-   Version 1
-  Allows all available Arduino pins to be allocated as either an input or output (but not both!).
-  Each output pin, here defined as LED, is assigned to an Event Variable that can be
-  used in any combination against a received event.
-  An input pin, here defined as switch, will generate an on or off event.
-  The event handler has been re-written so that action is determined by op Code.
-  Op codes supported are ACON, ASON, ACOF, ACON.
-  This sketch doe snot include the use of the CBUS switch or LEDs.  The CBUS and CBUSConfig
-  libraries must be able to accomodate this.
-***************************************************************************************
-*/
+// CANmINnOUT
+
 
 /*
   Copyright (C) 2021 Martin Da Costa
@@ -57,6 +44,8 @@
 
       Streaming   -- C++ stream style output, v5, (http://arduiniana.org/libraries/streaming/)
       ACAN2515    -- library to support the MCP2515/25625 CAN controller IC
+      CBUSSwitch  -- library access required by CBUS and CBUS Config
+      CBUSLED     -- library access required by CBUS and CBUS Config
 */
 ///////////////////////////////////////////////////////////////////////////////////
 // Pin Use map UNO:
@@ -81,8 +70,13 @@
 // Digital / Analog pin 5     Not Used
 //////////////////////////////////////////////////////////////////////////
 
-#define NO_CBUS_HW_UI
-#define DEBUG 1       // set to 0 for no serial debug
+#define DEBUG 0       // set to 0 for no serial debug
+
+#if DEBUG
+#define DEBUG_PRINT(S) Serial << S << endl
+#else
+#define DEBUG_PRINT(S)
+#endif
 
 // 3rd party libraries
 #include <Streaming.h>
@@ -93,7 +87,7 @@
 #include "LEDControl.h"          // CBUS LEDs
 #include <CBUSconfig.h>          // module configuration
 #include <cbusdefs.h>            // MERG CBUS constants
-#include "CBUSParams.h"
+#include <CBUSParams.h>
 
 ////////////DEFINE MODULE/////////////////////////////////////////////////
 
@@ -102,11 +96,11 @@ unsigned char mname[7] = { 'm', 'I', 'N', 'n', 'O', 'U', 'T' };
 
 // constants
 const byte VER_MAJ = 1;         // code major version
-const char VER_MIN = " ";       // code minor version
+const char VER_MIN = ' ';       // code minor version
 const byte VER_BETA = 0;        // code beta sub-version
 const byte MODULE_ID = 99;      // CBUS module type
 
-const byte CAN_OSC_FREQ = 8000000uL;     // Oscillator frequency on the CAN2515 board
+const unsigned long CAN_OSC_FREQ = 8000000;     // Oscillator frequency on the CAN2515 board
 
 #define NUM_LEDS 2              // How many LEDs are there?
 #define NUM_SWITCHES 2          // How many switchs are there?
@@ -122,6 +116,7 @@ LEDControl moduleLED[] = {
     LEDControl(7)
 };
 const int NUM_LEDS = sizeof(moduleLED) / sizeof(LEDControl);
+byte switchState[NUM_SWITCHES];
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -143,7 +138,7 @@ void setupCBUS()
 {
   // set config layout parameters
   config.EE_NVS_START = 10;
-  config.EE_NUM_NVS = 10;
+  config.EE_NUM_NVS = NUM_SWITCHES;
   config.EE_EVENTS_START = 50;
   config.EE_MAX_EVENTS = 64;
   config.EE_NUM_EVS = NUM_LEDS;
@@ -175,39 +170,37 @@ void setupCBUS()
   // configure and start CAN bus and CBUS message processing
   CBUS.setNumBuffers(2);         // more buffers = more memory used, fewer = less
   CBUS.setOscFreq(CAN_OSC_FREQ);   // select the crystal frequency of the CAN module
-  CBUS.setPins(10, 2);           // select pins for CAN bus CE and interrupt connections
+  CBUS.setPins(CAN_CS_PIN, CAN_INT_PIN);           // select pins for CAN bus CE and interrupt connections
   CBUS.begin();
 }
-
 //
-/// setup - runs once at power on
+///  setup Module - runs once at power on called from setup()
 //
 
-void setup()
+void setupModule()
 {
-  Serial.begin (115200);
-  Serial << endl << endl << F("> ** CBUS no HWUI 2 in 2 out v1 ** ") << __FILE__ << endl;
-
-  setupCBUS();
-
-  ///////////////////////////////////////////////////////////////////////////
   // configure the module switches, active low
   for (int i = 0; i < NUM_SWITCHES; i++)
   {
     moduleSwitch[i].attach(SWITCH[i], INPUT_PULLUP);
     moduleSwitch[i].interval(5);
+    switchState[i] = false;
   }
-
-  ///////////////////////////////////////////////////////////////////////////
-  // end of setup
-#if DEBUG
-  Serial << F("> ready") << endl << endl;
-#endif
 }
 
-//
-/// loop - runs forever
-//
+
+void setup()
+{
+  Serial.begin (115200);
+  Serial << endl << endl << F("> ** CBUS m in n out v1 ** ") << __FILE__ << endl;
+
+  setupCBUS();
+  setupModule();
+
+  // end of setup
+  DEBUG_PRINT(F("> ready"));
+}
+
 
 void loop()
 {
@@ -223,26 +216,71 @@ void loop()
   }
 
   // test for switch input
+  processSwitches();
+
+}
+
+void processSwitches(void)
+{
   for (int i = 0; i < NUM_SWITCHES; i++)
   {
     moduleSwitch[i].update();
     if (moduleSwitch[i].changed())
     {
-#if DEBUG
-      Serial << F("> Button ") << i << F(" state change detected") << endl;
-      if (moduleSwitch[i].fell()) {
-        Serial << F("> Button ") << i << F(" pressed, send 0x") << _HEX(OPC_ACON) << endl;
-      } else {
-        Serial << F("> Button ") << i << F(" released, send 0x") << _HEX(OPC_ACOF) << endl;
-      }
-#endif
+      byte nv = i + 1;
+      byte nvval = config.readNV(nv);
+      byte opCode;
 
-      byte opCode = (moduleSwitch[i].fell() ? OPC_ACON : OPC_ACOF);
-      sendEvent(opCode, (i + 1));
+      DEBUG_PRINT(F("> Button ") << i << F(" state change detected"));
+      Serial << F (" NV = ") << nv << F(" NV Value = ") << nvval << endl;
+
+      switch (nvval)
+      {
+        case 0:
+          opCode = (moduleSwitch[i].fell() ? OPC_ACON : OPC_ACOF);
+          DEBUG_PRINT(F("> Button ") << i
+              << (moduleSwitch[i].fell() ? F(" pressed, send 0x") : F(" released, send 0x")) << _HEX(opCode));
+          sendEvent(opCode, (i + 1));
+          break;
+
+        case 1:
+          if (moduleSwitch[i].fell())
+          {
+            opCode = OPC_ACON;
+            DEBUG_PRINT(F("> Button ") << i << F(" pressed, send 0x") << _HEX(OPC_ACON));
+            sendEvent(opCode, (i + 1));
+          }
+          break;
+
+        case 2:
+
+          if (moduleSwitch[i].fell())
+          {
+            opCode = OPC_ACOF;
+            DEBUG_PRINT(F("> Button ") << i << F(" pressed, send 0x") << _HEX(OPC_ACOF));
+            sendEvent(opCode, (i + 1));
+          }
+          break;
+
+        case 3:
+
+          if (moduleSwitch[i].fell())
+          {
+            switchState[i] = !switchState[i];
+            opCode = (switchState[i] ? OPC_ACON : OPC_ACOF);
+            DEBUG_PRINT(F("> Button ") << i
+                << (moduleSwitch[i].fell() ? F(" pressed, send 0x") : F(" released, send 0x")) << _HEX(opCode));
+            sendEvent(opCode, (i + 1));
+          }
+
+          break;
+
+        default:
+          DEBUG_PRINT(F("> Invalid NV value."));
+          break;
+      }
     }
   }
-
-  // bottom of loop()
 }
 
 // Send an event routine according to Module Switch
@@ -257,50 +295,50 @@ bool sendEvent(byte opCode, unsigned int eventNo)
   msg.data[3] = highByte(eventNo);
   msg.data[4] = lowByte(eventNo);
 
-#if DEBUG
-  if (CBUS.sendMessage(&msg)) {
-    Serial << F("> sent CBUS message with Event Number ") << eventNo << endl;
+  bool res = CBUS.sendMessage(&msg);
+  if (res) {
+    DEBUG_PRINT(F("> sent CBUS message with Event Number ") << eventNo);
   } else {
-    Serial << F("> error sending CBUS message") << endl;
+    DEBUG_PRINT(F("> error sending CBUS message"));
   }
-#endif
+  return res;
 }
 
 //
-/// user-defined event processing function
 /// called from the CBUS library when a learned event is received
-/// it receives the event table index and the CAN frame
 //
 void eventhandler(byte index, CANFrame *msg)
 {
-  byte opc;
-  byte ev;
-  int eeaddress;
-  byte evval;
+  byte opc = msg->data[0];
 
-#if DEBUG
-  Serial << F("> event handler: index = ") << index << F(", opcode = 0x") << _HEX(msg->data[0]) << endl;
-#endif
+  DEBUG_PRINT(F("> event handler: index = ") << index << F(", opcode = 0x") << _HEX(msg->data[0]));
+  DEBUG_PRINT(F("> event handler: length = ") << msg->len);
 
-  opc = msg->data[0];
+  unsigned int node_number = (msg->data[1] << 8 ) + msg->data[2];
+  unsigned int event_number = (msg->data[3] << 8 ) + msg->data[4];
+  DEBUG_PRINT(F("> NN = ") << node_number << F(", EN = ") << event_number);
+  DEBUG_PRINT(F("> op_code = ") << opc);
 
-  switch (msg->data[0]) {
+  switch (opc) {
 
     case OPC_ACON:
     case OPC_ASON:
+      for (int i = 0; i < NUM_LEDS; i++)
+      {
+        byte ev = i + 1;
+        byte evval = config.getEventEVval(index, ev);
 
-      for (int i = 0; i < NUM_LEDS; i++) {
-
-        ev = i + 1;
-        eeaddress = config.EE_EVENTS_START + (index * config.EE_BYTES_PER_EVENT) + 4 + (ev - 1);
-        evval = config.readEEPROM(eeaddress);
-
-        switch (evval) {
+        switch (evval)
+        {
           case 1:
-            moduleLED[i].flash(500);
+            moduleLED[i].on();
             break;
 
           case 2:
+            moduleLED[i].flash(500);
+            break;
+
+          case 3:
             moduleLED[i].flash(250);
             break;
 
@@ -312,12 +350,10 @@ void eventhandler(byte index, CANFrame *msg)
 
     case OPC_ACOF:
     case OPC_ASOF:
-
-      for (int i = 0; i < NUM_LEDS; i++) {
-
-        ev = i + 1;
-        eeaddress = config.EE_EVENTS_START + (index * config.EE_BYTES_PER_EVENT) + 4 + (ev - 1);
-        evval = config.readEEPROM(eeaddress);
+      for (int i = 0; i < NUM_LEDS; i++)
+      {
+        byte ev = i + 1;
+        byte evval = config.getEventEVval(index, ev);
 
         if (evval > 0) {
           moduleLED[i].off();
@@ -327,9 +363,7 @@ void eventhandler(byte index, CANFrame *msg)
   }
 }
 
-//
-/// print code version config details and copyright notice
-//
+
 void printConfig(void)
 {
   // code version
@@ -347,16 +381,14 @@ void printConfig(void)
 void processSerialInput(void)
 {
   byte uev = 0;
-  char msgstr[32], dstr[32];
+  char msgstr[32];
 
   if (Serial.available()) {
-
     char c = Serial.read();
 
     switch (c) {
 
       case 'n':
-
         // node config
         printConfig();
 
@@ -367,7 +399,6 @@ void processSerialInput(void)
         break;
 
       case 'e':
-
         // EEPROM learned event data table
         Serial << F("> stored events ") << endl;
         Serial << F("  max events = ") << config.EE_MAX_EVENTS << F(" EVs per event = ") << config.EE_NUM_EVS << F(" bytes per event = ") << config.EE_BYTES_PER_EVENT << endl;
@@ -384,8 +415,8 @@ void processSerialInput(void)
         Serial << F("  Ev#  |  NNhi |  NNlo |  ENhi |  ENlo | ");
 
         for (byte j = 0; j < (config.EE_NUM_EVS); j++) {
-          sprintf(dstr, "EV%03d | ", j + 1);
-          Serial << dstr;
+          sprintf(msgstr, "EV%03d | ", j + 1);
+          Serial << msgstr;
         }
 
         Serial << F("Hash |") << endl;
@@ -394,19 +425,18 @@ void processSerialInput(void)
 
         // for each event data line
         for (byte j = 0; j < config.EE_MAX_EVENTS; j++) {
-
           if (config.getEvTableEntry(j) != 0) {
-            sprintf(dstr, "  %03d  | ", j);
-            Serial << dstr;
+            sprintf(msgstr, "  %03d  | ", j);
+            Serial << msgstr;
 
             // for each data byte of this event
             for (byte e = 0; e < (config.EE_NUM_EVS + 4); e++) {
-              sprintf(dstr, " 0x%02hx | ", config.readEEPROM(config.EE_EVENTS_START + (j * config.EE_BYTES_PER_EVENT) + e));
-              Serial << dstr;
+              sprintf(msgstr, " 0x%02hx | ", config.readEEPROM(config.EE_EVENTS_START + (j * config.EE_BYTES_PER_EVENT) + e));
+              Serial << msgstr;
             }
 
-            sprintf(dstr, "%4d |", config.getEvTableEntry(j));
-            Serial << dstr << endl;
+            sprintf(msgstr, "%4d |", config.getEvTableEntry(j));
+            Serial << msgstr << endl;
           }
         }
 
@@ -416,7 +446,6 @@ void processSerialInput(void)
 
       // NVs
       case 'v':
-
         // note NVs number from 1, not 0
         Serial << "> Node variables" << endl;
         Serial << F("   NV   Val") << endl;
@@ -434,7 +463,6 @@ void processSerialInput(void)
 
       // CAN bus status
       case 'c':
-
         CBUS.printStatus();
         break;
 
@@ -473,7 +501,6 @@ void processSerialInput(void)
           ResWaitTime = millis();
           ResetRq = true;
         }
-
         else {
           // This is a confirmed request
           // 2 sec timeout
@@ -481,7 +508,6 @@ void processSerialInput(void)
             Serial << F(">timeout expired, reset not performed") << endl;
             ResetRq = false;
           }
-
           else {
             //Request confirmed within timeout
             Serial << F(">RESETTING AND WIPING EEPROM") << endl;
