@@ -102,11 +102,9 @@ const byte MODULE_ID = 99;      // CBUS module type
 
 const unsigned long CAN_OSC_FREQ = 8000000;     // Oscillator frequency on the CAN2515 board
 
-#define NUM_LEDS 2              // How many LEDs are there?
-#define NUM_SWITCHES 2          // How many switchs are there?
-
 //Module pins available for use are Pins 3 - 9 and A0 - A5
 const byte SWITCH[NUM_SWITCHES] = {9, 6};     // Module Switch takes input to 0V.
+const int NUM_SWITCHES = sizeof(SWITCH) / sizeof(SWITCH[0]);
 
 // module objects
 Bounce moduleSwitch[NUM_SWITCHES];  //  switch as input
@@ -511,7 +509,7 @@ void processSerialInput(void)
           else {
             //Request confirmed within timeout
             Serial << F(">RESETTING AND WIPING EEPROM") << endl;
-            //config.resetModule();
+            config.resetModule();
             ResetRq = false;
           }
         }
